@@ -1,0 +1,30 @@
+name: Build RustDesk
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      
+      - name: Build RustDesk
+        run: |
+          cargo build --release
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: rustdesk-mac
+          path: target/release/rustdesk
