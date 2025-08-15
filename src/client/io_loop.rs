@@ -77,6 +77,7 @@ pub struct Remote<T: InvokeUiSession> {
     video_threads: HashMap<usize, VideoThread>,
     chroma: Arc<RwLock<Option<Chroma>>>,
     last_record_state: bool,
+    sent_close_reason: bool,
 }
 
 #[derive(Default)]
@@ -85,6 +86,7 @@ struct ParsedPeerInfo {
     is_installed: bool,
     idd_impl: String,
     support_view_camera: bool,
+    support_terminal: bool,
 }
 
 impl ParsedPeerInfo {
@@ -124,6 +126,7 @@ impl<T: InvokeUiSession> Remote<T> {
             video_threads: Default::default(),
             chroma: Default::default(),
             last_record_state: false,
+            sent_close_reason: false,
         }
     }
 
@@ -131,10 +134,7 @@ impl<T: InvokeUiSession> Remote<T> {
         #[cfg(target_os = "windows")]
         let _file_clip_context_holder = {
             // `is_port_forward()` will not reach here, but we still check it for clarity.
-            if !self.handler.is_file_transfer()
-                && !self.handler.is_port_forward()
-                && !self.handler.is_view_camera()
-            {
+            if self.handler.is_default() {
                 // It is ok to call this function multiple times.
                 ContextSend::enable(true);
                 Some(crate::SimpleCallOnReturn {
@@ -159,6 +159,8 @@ impl<T: InvokeUiSession> Remote<T> {
             ConnType::FILE_TRANSFER
         } else if self.handler.is_view_camera() {
             ConnType::VIEW_CAMERA
+        } else if self.handler.is_terminal() {
+            ConnType::TERMINAL
         } else {
             ConnType::default()
         };
@@ -172,13 +174,14 @@ impl<T: InvokeUiSession> Remote<T> {
         )
         .await
         {
-            Ok(((mut peer, direct, pk, _kcp), (feedback, rendezvous_server))) => {
+            Ok(((mut peer, direct, pk, kcp, stream_type), (feedback, rendezvous_server))) => {
                 self.handler
                     .connection_round_state
                     .lock()
                     .unwrap()
                     .set_connected();
-                self.handler.set_connection_type(peer.is_secured(), direct); // flutter -> connection_ready
+                self.handler
+                    .set_connection_type(peer.is_secured(), direct, stream_type); // flutter -> connection_ready
                 self.handler.update_direct(Some(direct));
                 if conn_type == ConnType::DEFAULT_CONN || conn_type == ConnType::VIEW_CAMERA {
                     self.handler
@@ -195,11 +198,7 @@ impl<T: InvokeUiSession> Remote<T> {
                 let mut rx_clip_client_holder = (Arc::new(TokioMutex::new(rx)), None);
                 #[cfg(any(target_os = "windows", feature = "unix-file-copy-paste"))]
                 {
-                    let is_conn_not_default = self.handler.is_file_transfer()
-                        || self.handler.is_port_forward()
-                        || self.handler.is_rdp()
-                        || self.handler.is_view_camera();
-                    if !is_conn_not_default {
+                    if self.handler.is_default() {
                         (self.client_conn_id, rx_clip_client_holder.0) =
                             clipboard::get_rx_cliprdr_client(&self.handler.get_id());
                         log::debug!("get cliprdr client for conn_id {}", self.client_conn_id);
@@ -226,8 +225,27 @@ impl<T: InvokeUiSession> Remote<T> {
                         res = peer.next() => {
                             if let Some(res) = res {
                                 match res {
-                                    Err(err) => {
-                                        self.handler.on_establish_connection_error(err.to_string());
+                                    Err(_err) => {
+                                        // 只显示中文连接错误，不传递具体错误信息
+                                        self.handler.on_establish_connection_error(String::from("连接错误"));
+                                        break;
+                                    }
+                                    Ok(ref bytes) => {
+                                        last_recv_time = Instant::now();
+                                        if !received {
+                                            received = true;
+                                            self.handler.update_received(true);
+                                        }
+                                        self.data_count.fetch_add(bytes.len(), Ordering::Relaxed);
+                                        if !self.handle_msg_from_peer(bytes, &mut peer).await {
+                                            break
+                                        }
+                                    }
+                                }
+                            } else {
+                                if self.handler.is_restarting_remote_device() {
+                                    log::info!("Restart remote device");
+                                    self.handler.msgbox("restarting", "Restarting remote device", "remote_restarting_tip", "");
                                         break;
                                     }
                                     Ok(ref bytes) => {
