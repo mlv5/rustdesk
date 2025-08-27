@@ -71,7 +71,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Password Required", "需要密码"),
         ("Please enter your password", "请输入密码"),
         ("Remember password", "记住密码"),
-        ("Wrong Password", "密码错误"),
+        ("Wrong Password", "密码错误，请去设置-账户页面登录OA账号"),
         ("Do you want to enter again?", "是否要再次输入？"),
         ("Connection Error", "连接错误"),
         ("Error", "错误"),
