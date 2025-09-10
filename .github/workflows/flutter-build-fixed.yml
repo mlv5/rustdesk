@@ -1,0 +1,142 @@
+name: Flutter Build Fixed
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-[0-9]+'
+
+env:
+  FLUTTER_VERSION: "3.24.5"
+  VCPKG_COMMIT_ID: "2024.01.12"
+  VERSION: ${{ github.ref_name }}
+
+jobs:
+  build-for-macOS:
+    name: ${{ matrix.job.target }}
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - {
+              target: x86_64-apple-darwin,
+              os: macos-13,
+              extra-build-args: "",
+              arch: x86_64,
+              vcpkg-triplet: x64-osx,
+            }
+          - {
+              target: aarch64-apple-darwin,
+              os: macos-latest,
+              extra-build-args: "--screencapturekit",
+              arch: aarch64,
+              vcpkg-triplet: arm64-osx,
+            }
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Clear problematic caches
+        run: |
+          brew cleanup
+          flutter clean
+          cargo clean
+
+      - name: Install build runtime
+        run: |
+          # 先卸载可能存在的cmake
+          brew uninstall cmake --ignore-dependencies || true
+          # 安装构建工具
+          brew install llvm create-dmg nasm cmake gcc wget ninja
+          if command -v pkg-config &>/dev/null; then
+              echo "pkg-config is already installed"
+          else
+              brew install pkg-config
+          fi
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.81"
+          targets: ${{ matrix.job.target }}
+          components: "rustfmt"
+
+      - name: Build rustdesk
+        run: |
+          if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
+            MIN_MACOS_VERSION="12.3"
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+            sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+            sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+          fi
+          ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
+
+      - name: Fix Flutter framework embedding
+        run: |
+          # 确保Flutter框架被正确嵌入
+          if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
+            # 检查Flutter框架是否存在
+            if [ ! -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
+              echo "FlutterMacOS.framework not found, copying from Flutter installation"
+              # 从Flutter安装目录复制框架
+              FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))
+              
+              # 根据架构选择正确的框架路径
+              if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
+                FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-arm64/FlutterMacOS.framework"
+              else
+                FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-x64/FlutterMacOS.framework"
+              fi
+              
+              # 检查源框架是否存在
+              if [ ! -d "$FRAMEWORK_PATH" ]; then
+                echo "Error: Flutter framework not found at $FRAMEWORK_PATH"
+                echo "Available frameworks:"
+                ls -la "$FLUTTER_ROOT/bin/cache/artifacts/engine/" || true
+                exit 1
+              fi
+              
+              # 确保目标目录存在
+              mkdir -p "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/"
+              
+              # 复制框架
+              cp -R "$FRAMEWORK_PATH" \
+                "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/"
+              
+              echo "FlutterMacOS.framework copied successfully"
+            else
+              echo "FlutterMacOS.framework already exists"
+            fi
+            # 验证框架是否正确嵌入
+            ls -la "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/"
+          else
+            echo "Error: RustDesk.app not found"
+            exit 1
+          fi
+
+      - name: create unsigned dmg
+        run: |
+          CREATE_DMG="$(command -v create-dmg)"
+          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-macos-${{ matrix.job.arch }}-fixed
+          path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg
