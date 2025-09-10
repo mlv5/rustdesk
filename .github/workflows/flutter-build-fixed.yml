@@ -16,27 +16,73 @@ env:
   VERSION: ${{ github.ref_name }}
 
 jobs:
+  # Windows x86_64 构建
+  build-for-windows:
+    name: Windows x86_64
+    runs-on: windows-2022
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build runtime
+        run: |
+          # 安装必要的构建工具
+          choco install llvm cmake ninja nasm python -y
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.81"
+          targets: x86_64-pc-windows-msvc
+          components: "rustfmt"
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install vcpkg dependencies
+        run: |
+          if (! $env:VCPKG_ROOT\vcpkg install --x-install-root="$env:VCPKG_ROOT\installed") {
+            Get-ChildItem -Path "$env:VCPKG_ROOT\" -Filter "*.log" -Recurse | ForEach-Object {
+              Write-Host "$($_.FullName):"
+              Write-Host "======"
+              Get-Content $_.FullName
+              Write-Host "======"
+              Write-Host ""
+            }
+            exit 1
+          }
+
+      - name: Generate bridge
+        run: |
+          cd flutter
+          dart run ffigen --config ffigen.yaml
+          cd ..
+
+      - name: Build rustdesk
+        run: |
+          python build.py --flutter --hwcodec --unix-file-copy-paste
+
+      - name: Upload Windows app
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-windows-x86_64-fixed
+          path: flutter/build/windows/x64/runner/Release/rustdesk.exe
+
+  # macOS ARM64 构建
   build-for-macOS:
-    name: ${{ matrix.job.target }}
-    runs-on: ${{ matrix.job.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        job:
-          - {
-              target: x86_64-apple-darwin,
-              os: macos-13,
-              extra-build-args: "",
-              arch: x86_64,
-              vcpkg-triplet: x64-osx,
-            }
-          - {
-              target: aarch64-apple-darwin,
-              os: macos-latest,
-              extra-build-args: "--screencapturekit",
-              arch: aarch64,
-              vcpkg-triplet: arm64-osx,
-            }
+    name: macOS ARM64
+    runs-on: macos-latest
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -71,19 +117,23 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: "1.81"
-          targets: ${{ matrix.job.target }}
+          targets: aarch64-apple-darwin
           components: "rustfmt"
+
+      - name: Generate bridge
+        run: |
+          cd flutter
+          dart run ffigen --config ffigen.yaml
+          cd ..
 
       - name: Build rustdesk
         run: |
-          if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
-            MIN_MACOS_VERSION="12.3"
-            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
-            sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
-            sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
-            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
-          fi
-          ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
+          MIN_MACOS_VERSION="12.3"
+          sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+          sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+          sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
+          sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+          ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit
 
       - name: Fix Flutter framework embedding
         run: |
@@ -95,12 +145,8 @@ jobs:
               # 从Flutter安装目录复制框架
               FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))
               
-              # 根据架构选择正确的框架路径
-              if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
-                FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-arm64/FlutterMacOS.framework"
-              else
-                FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-x64/FlutterMacOS.framework"
-              fi
+              # 使用ARM64框架路径
+              FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-arm64/FlutterMacOS.framework"
               
               # 检查源框架是否存在
               if [ ! -d "$FRAMEWORK_PATH" ]; then
@@ -133,10 +179,10 @@ jobs:
           CREATE_DMG="$(command -v create-dmg)"
           CREATE_DMG="$(readlink -f "$CREATE_DMG")"
           sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
-          create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+          create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-aarch64.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
 
       - name: Upload macOS app
         uses: actions/upload-artifact@master
         with:
-          name: rustdesk-macos-${{ matrix.job.arch }}-fixed
-          path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg
+          name: rustdesk-macos-aarch64-fixed
+          path: rustdesk-${{ env.VERSION }}-aarch64.dmg
