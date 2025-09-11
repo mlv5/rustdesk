@@ -17,7 +17,7 @@ on:
 env:
   FLUTTER_VERSION: "3.24.5"
   MAC_RUST_VERSION: "1.81"
-  VCPKG_COMMIT_ID: "2024.01.12"
+  VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836"
   VERSION: ${{ github.ref_name }}
 
 jobs:
