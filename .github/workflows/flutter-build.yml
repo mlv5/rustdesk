@@ -868,26 +868,40 @@ jobs:
       - name: Remove code signatures for unsigned build
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-              # 移除应用和框架的代码签名，让应用可以以"任何来源"的方式运行
-              if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
-                echo "Removing code signatures from RustDesk.app and frameworks"
-                
-                # 移除主应用的代码签名
-                codesign --remove-signature "./flutter/build/macos/Build/Products/Release/RustDesk.app" || true
-                
-                # 移除FlutterMacOS.framework的代码签名
-                if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
-                  codesign --remove-signature "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" || true
-                fi
-                
-                # 移除其他可能存在的框架的代码签名
-                find "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/" -name "*.framework" -exec codesign --remove-signature {} \; || true
-                
-                echo "Code signatures removed successfully"
-              else
-                echo "Error: RustDesk.app not found"
-                exit 1
-              fi
+                  # 移除应用和框架的代码签名，让应用可以以"任何来源"的方式运行
+                  if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
+                    echo "Removing code signatures from RustDesk.app and frameworks"
+                    
+                    # 使用更彻底的方法移除代码签名
+                    # 1. 移除主应用的代码签名
+                    codesign --remove-signature "./flutter/build/macos/Build/Products/Release/RustDesk.app" || true
+                    
+                    # 2. 移除FlutterMacOS.framework的代码签名
+                    if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
+                      codesign --remove-signature "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" || true
+                      
+                      # 3. 移除FlutterMacOS.framework内部的所有签名
+                      find "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" -type f -name "FlutterMacOS" -exec codesign --remove-signature {} \; || true
+                    fi
+                    
+                    # 4. 移除其他可能存在的框架的代码签名
+                    find "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/" -name "*.framework" -exec codesign --remove-signature {} \; || true
+                    
+                    # 5. 移除所有可执行文件的代码签名
+                    find "./flutter/build/macos/Build/Products/Release/RustDesk.app" -type f -perm +111 -exec codesign --remove-signature {} \; || true
+                    
+                    # 6. 验证签名是否已完全移除
+                    echo "Verifying code signatures removal:"
+                    codesign -dv "./flutter/build/macos/Build/Products/Release/RustDesk.app" || echo "Main app signature removed"
+                    if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
+                      codesign -dv "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" || echo "FlutterMacOS.framework signature removed"
+                    fi
+                    
+                    echo "Code signatures removed successfully"
+                  else
+                    echo "Error: RustDesk.app not found"
+                    exit 1
+                  fi
   
       - name: create unsigned dmg
         if: env.UPLOAD_ARTIFACT == 'true'
