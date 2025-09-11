@@ -580,52 +580,52 @@ jobs:
       - name: Clean build artifacts
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-              # 清理构建产物
-              echo "Cleaning build artifacts..."
-              
-              # 清理Flutter构建缓存
-              flutter clean || true
-              rm -rf flutter/build || true
-              
-              # 清理Rust构建缓存
-              cargo clean || true
-              
-              # 清理可能的临时文件
-              find . -name "*.o" -delete || true
-              find . -name "*.a" -delete || true
-              
-              echo "Build artifacts cleaned"
+                  # 清理构建产物
+                  echo "Cleaning build artifacts..."
+                  
+                  # 清理Flutter构建缓存
+                  flutter clean || true
+                  rm -rf flutter/build || true
+                  
+                  # 清理Rust构建缓存
+                  cargo clean || true
+                  
+                  # 清理可能的临时文件
+                  find . -name "*.o" -delete || true
+                  find . -name "*.a" -delete || true
+                  
+                  echo "Build artifacts cleaned"
 
       - name: Build rustdesk
         run: |
-                  MIN_MACOS_VERSION="12.3"
-                  sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
-                  sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
-                  sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
-                  sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
-                  
-                  # 设置环境变量来忽略警告
-                  export CFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-                  export CXXFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-                  export LDFLAGS="-Wl,-ld_classic"
-                  
-                  # 设置Flutter构建参数
-                  export FLUTTER_BUILD_MODE=release
-                  export FLUTTER_BUILD_NUMBER=1
-                  
-                  # 构建应用，允许警告但继续构建
-                  set +e  # 允许命令失败但不退出
-                  ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit
-                  BUILD_EXIT_CODE=$?
-                  set -e  # 重新启用错误退出
-                  
-                  # 检查构建是否成功（即使有警告）
-                  if [ $BUILD_EXIT_CODE -eq 0 ] || [ $BUILD_EXIT_CODE -eq 1 ]; then
-                    echo "Build completed successfully (with warnings)"
-                  else
-                    echo "Build failed with exit code: $BUILD_EXIT_CODE"
-                    exit $BUILD_EXIT_CODE
-                  fi
+                      # 设置环境变量来忽略警告
+                      export CFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
+                      export CXXFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
+                      export LDFLAGS="-Wl,-ld_classic"
+                      
+                      # 设置Flutter构建参数
+                      export FLUTTER_BUILD_MODE=release
+                      export FLUTTER_BUILD_NUMBER=1
+                      
+                      MIN_MACOS_VERSION="12.3"
+                      sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+                      sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+                      sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
+                      sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+                      
+                      # 构建应用，允许警告但继续构建
+                      set +e  # 允许命令失败但不退出
+                      ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit
+                      BUILD_EXIT_CODE=$?
+                      set -e  # 重新启用错误退出
+                      
+                      # 检查构建是否成功（即使有警告）
+                      if [ $BUILD_EXIT_CODE -eq 0 ] || [ $BUILD_EXIT_CODE -eq 1 ]; then
+                        echo "Build completed successfully (with warnings)"
+                      else
+                        echo "Build failed with exit code: $BUILD_EXIT_CODE"
+                        exit $BUILD_EXIT_CODE
+                      fi
 
       # - name: Upload Artifacts
       #   # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
@@ -822,6 +822,12 @@ jobs:
                       export FLUTTER_BUILD_MODE=release
                       export FLUTTER_BUILD_NUMBER=1
                       
+                      # 验证环境变量设置
+                      echo "Environment variables:"
+                      echo "CFLAGS: $CFLAGS"
+                      echo "CXXFLAGS: $CXXFLAGS"
+                      echo "LDFLAGS: $LDFLAGS"
+                      
                       echo "Swift compilation issues fixed"
 
       - name: Install flutter
@@ -854,6 +860,19 @@ jobs:
         with:
           prefix-key: ${{ matrix.job.os }}
 
+      - name: Setup Flutter dependencies
+        run: |
+              cd flutter
+              flutter pub get
+              flutter pub upgrade
+              cd ..
+  
+      - name: Generate bridge
+        run: |
+              cd flutter
+              dart run ffigen --config ffigen.yaml
+              cd ..
+
       - name: Restore bridge files
         uses: actions/download-artifact@master
         with:
@@ -865,6 +884,27 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
+
+      - name: Verify build environment
+        run: |
+              echo "=== Build Environment Verification ==="
+              echo "Flutter version:"
+              flutter --version
+              echo "Rust version:"
+              rustc --version
+              echo "Cargo version:"
+              cargo --version
+              echo "CMake version:"
+              cmake --version
+              echo "LLVM version:"
+              clang --version
+              echo "Environment variables:"
+              echo "CFLAGS: $CFLAGS"
+              echo "CXXFLAGS: $CXXFLAGS"
+              echo "LDFLAGS: $LDFLAGS"
+              echo "FLUTTER_BUILD_MODE: $FLUTTER_BUILD_MODE"
+              echo "FLUTTER_BUILD_NUMBER: $FLUTTER_BUILD_NUMBER"
+              echo "======================================"
 
       - name: Install vcpkg dependencies
         run: |
@@ -881,6 +921,33 @@ jobs:
             exit 1
           fi
           head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-${{ matrix.job.vcpkg-triplet }}-rel-out.log" || true
+
+      - name: Verify build output
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+              echo "=== Build Output Verification ==="
+              if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
+                  echo "✅ RustDesk.app found"
+                  ls -la "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/"
+                  
+                  # 检查FlutterMacOS.framework
+                  if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
+                      echo "✅ FlutterMacOS.framework found"
+                  else
+                      echo "❌ FlutterMacOS.framework missing"
+                  fi
+                  
+                  # 检查可执行文件
+                  if [ -f "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/RustDesk" ]; then
+                      echo "✅ RustDesk executable found"
+                  else
+                      echo "❌ RustDesk executable missing"
+                  fi
+              else
+                  echo "❌ RustDesk.app not found"
+                  exit 1
+              fi
+              echo "=================================="
 
       - name: Show version information (Rust, cargo, Clang)
         shell: bash
@@ -1339,17 +1406,55 @@ jobs:
               
               echo "Build environment set successfully"
 
+      - name: Clean build artifacts
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+                  # 清理构建产物
+                  echo "Cleaning build artifacts..."
+                  
+                  # 清理Flutter构建缓存
+                  flutter clean || true
+                  rm -rf flutter/build || true
+                  
+                  # 清理Rust构建缓存
+                  cargo clean || true
+                  
+                  # 清理可能的临时文件
+                  find . -name "*.o" -delete || true
+                  find . -name "*.a" -delete || true
+                  
+                  echo "Build artifacts cleaned"
+
       - name: Build rustdesk
         run: |
-                  MIN_MACOS_VERSION="12.3"
-                  sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
-                  sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
-                  sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
-                  sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
-                  
-                  
-                  # 构建应用
-                  ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit
+                      # 设置环境变量来忽略警告
+                      export CFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
+                      export CXXFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
+                      export LDFLAGS="-Wl,-ld_classic"
+                      
+                      # 设置Flutter构建参数
+                      export FLUTTER_BUILD_MODE=release
+                      export FLUTTER_BUILD_NUMBER=1
+                      
+                      MIN_MACOS_VERSION="12.3"
+                      sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+                      sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+                      sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
+                      sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+                      
+                      # 构建应用，允许警告但继续构建
+                      set +e  # 允许命令失败但不退出
+                      ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit
+                      BUILD_EXIT_CODE=$?
+                      set -e  # 重新启用错误退出
+                      
+                      # 检查构建是否成功（即使有警告）
+                      if [ $BUILD_EXIT_CODE -eq 0 ] || [ $BUILD_EXIT_CODE -eq 1 ]; then
+                        echo "Build completed successfully (with warnings)"
+                      else
+                        echo "Build failed with exit code: $BUILD_EXIT_CODE"
+                        exit $BUILD_EXIT_CODE
+                      fi
 
       # https://github.com/r0adkll/sign-android-release/issues/84#issuecomment-1889636075
       - name: Setup sign tool version variable
