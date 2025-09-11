@@ -865,45 +865,109 @@ jobs:
                 exit 1
               fi
   
-      - name: Remove code signatures for unsigned build
+      - name: Create and install self-signed certificate
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-                  # 移除应用和框架的代码签名，让应用可以以"任何来源"的方式运行
+                  # 创建自签名证书
+                  echo "Creating self-signed certificate..."
+                  
+                  # 创建证书配置文件
+                  cat > cert.conf << EOF
+                  [req]
+                  distinguished_name = req_distinguished_name
+                  req_extensions = v3_req
+                  prompt = no
+                  
+                  [req_distinguished_name]
+                  C = US
+                  ST = CA
+                  L = San Francisco
+                  O = RustDesk
+                  OU = Development
+                  CN = RustDesk Developer
+                  
+                  [v3_req]
+                  keyUsage = keyEncipherment, dataEncipherment
+                  extendedKeyUsage = serverAuth
+                  subjectAltName = @alt_names
+                  
+                  [alt_names]
+                  DNS.1 = localhost
+                  EOF
+                  
+                  # 生成私钥和证书（365天有效期）
+                  openssl req -x509 -newkey rsa:4096 -keyout rustdesk.key -out rustdesk.crt -days 365 -nodes -config cert.conf
+                  
+                  # 转换为p12格式
+                  openssl pkcs12 -export -out rustdesk.p12 -inkey rustdesk.key -in rustdesk.crt -password pass:rustdesk
+                  
+                  # 安装证书到钥匙串
+                  security import rustdesk.p12 -k ~/Library/Keychains/login.keychain -P rustdesk -T /usr/bin/codesign
+                  
+                  # 设置证书为可信任
+                  security set-key-partition-list -S apple-tool:,apple: -s -k "" ~/Library/Keychains/login.keychain
+                  
+                  echo "Self-signed certificate created and installed"
+      
+      - name: Sign app with self-signed certificate
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+                  # 使用自签名证书签名应用
                   if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
-                    echo "Removing code signatures from RustDesk.app and frameworks"
+                    echo "Signing app with self-signed certificate..."
                     
-                    # 使用更彻底的方法移除代码签名
-                    # 1. 移除主应用的代码签名
-                    codesign --remove-signature "./flutter/build/macos/Build/Products/Release/RustDesk.app" || true
+                    # 查找证书
+                    CERT_ID=$(security find-identity -v -p codesigning | grep "RustDesk Developer" | awk '{print $2}')
                     
-                    # 2. 移除FlutterMacOS.framework的代码签名
-                    if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
-                      codesign --remove-signature "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" || true
-                      
-                      # 3. 移除FlutterMacOS.framework内部的所有签名
-                      find "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" -type f -name "FlutterMacOS" -exec codesign --remove-signature {} \; || true
+                    if [ -z "$CERT_ID" ]; then
+                      echo "Error: Self-signed certificate not found"
+                      exit 1
                     fi
                     
-                    # 4. 移除其他可能存在的框架的代码签名
-                    find "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/" -name "*.framework" -exec codesign --remove-signature {} \; || true
+                    echo "Found certificate: $CERT_ID"
                     
-                    # 5. 移除所有可执行文件的代码签名
-                    find "./flutter/build/macos/Build/Products/Release/RustDesk.app" -type f -perm +111 -exec codesign --remove-signature {} \; || true
+                    # 签名主应用
+                    codesign --force --sign "$CERT_ID" --deep "./flutter/build/macos/Build/Products/Release/RustDesk.app"
                     
-                    # 6. 验证签名是否已完全移除
-                    echo "Verifying code signatures removal:"
-                    codesign -dv "./flutter/build/macos/Build/Products/Release/RustDesk.app" || echo "Main app signature removed"
-                    if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
-                      codesign -dv "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" || echo "FlutterMacOS.framework signature removed"
-                    fi
+                    # 验证签名
+                    codesign --verify --deep --strict "./flutter/build/macos/Build/Products/Release/RustDesk.app"
                     
-                    echo "Code signatures removed successfully"
+                    # 显示签名信息
+                    codesign -dv "./flutter/build/macos/Build/Products/Release/RustDesk.app"
+                    
+                    echo "App signed successfully with self-signed certificate"
+                  else
+                    echo "Error: RustDesk.app not found"
+                    exit 1
+                  fi
+      
+      - name: Remove quarantine attributes
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+                  # 移除应用的隔离属性，避免macOS阻止运行
+                  if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
+                    echo "Removing quarantine attributes from RustDesk.app"
+                    
+                    # 移除所有可能的隔离属性
+                    xattr -r -d com.apple.quarantine "./flutter/build/macos/Build/Products/Release/RustDesk.app" || true
+                    xattr -r -d com.apple.provenance "./flutter/build/macos/Build/Products/Release/RustDesk.app" || true
+                    xattr -r -d com.apple.metadata:kMDItemWhereFroms "./flutter/build/macos/Build/Products/Release/RustDesk.app" || true
+                    
+                    # 验证隔离属性是否已移除
+                    echo "Verifying quarantine attributes removal:"
+                    xattr -l "./flutter/build/macos/Build/Products/Release/RustDesk.app" || echo "No quarantine attributes found"
+                    
+                    # 设置正确的权限
+                    chmod -R 755 "./flutter/build/macos/Build/Products/Release/RustDesk.app"
+                    chmod +x "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/RustDesk"
+                    
+                    echo "Quarantine attributes removed successfully"
                   else
                     echo "Error: RustDesk.app not found"
                     exit 1
                   fi
   
-      - name: create unsigned dmg
+      - name: create signed dmg
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
             CREATE_DMG="$(command -v create-dmg)"
@@ -911,11 +975,11 @@ jobs:
             sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
             create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
   
-      - name: Upload unsigned macOS app
+      - name: Upload signed macOS app
         if: env.UPLOAD_ARTIFACT == 'true'
         uses: actions/upload-artifact@master
         with:
-            name: rustdesk-unsigned-macos-${{ matrix.job.arch }}
+            name: rustdesk-signed-macos-${{ matrix.job.arch }}
             path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg
   
       - name: Rename rustdesk
