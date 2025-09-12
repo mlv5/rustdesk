@@ -932,46 +932,48 @@ jobs:
       - name: Create and install self-signed certificate
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-                  # 创建自签名证书
-                  echo "Creating self-signed certificate..."
-                  
-                  # 创建证书配置文件
-                  cat > cert.conf << EOF
-                  [req]
-                  distinguished_name = req_distinguished_name
-                  req_extensions = v3_req
-                  prompt = no
-                  
-                  [req_distinguished_name]
-                  C = US
-                  ST = CA
-                  L = San Francisco
-                  O = RustDesk
-                  OU = Development
-                  CN = RustDesk Developer
-                  
-                  [v3_req]
-                  keyUsage = keyEncipherment, dataEncipherment
-                  extendedKeyUsage = serverAuth
-                  subjectAltName = @alt_names
-                  
-                  [alt_names]
-                  DNS.1 = localhost
-                  EOF
-                  
-                  # 生成私钥和证书（365天有效期）
-                  openssl req -x509 -newkey rsa:4096 -keyout rustdesk.key -out rustdesk.crt -days 365 -nodes -config cert.conf
-                  
-                  # 转换为p12格式
-                  openssl pkcs12 -export -out rustdesk.p12 -inkey rustdesk.key -in rustdesk.crt -password pass:rustdesk
-                  
-                  # 安装证书到钥匙串
-                  security import rustdesk.p12 -k ~/Library/Keychains/login.keychain -P rustdesk -T /usr/bin/codesign
-                  
-                  # 设置证书为可信任GitHub Actions兼容版本）
-                  security set-key-partition-list -S apple-tool:,apple: -s -k rustdesk ~/Library/Keychains/login.keychain
-                  
-                  echo "Self-signed certificate created and installed"
+                echo "Creating self-signed certificate..."
+                
+                # 创建证书配置文件
+                cat > cert.conf << EOF
+                [req]
+                distinguished_name = req_distinguished_name
+                req_extensions = v3_req
+                prompt = no
+                
+                [req_distinguished_name]
+                C = US
+                ST = CA
+                L = San Francisco
+                O = RustDesk
+                OU = Development
+                CN = RustDesk Developer
+                
+                [v3_req]
+                keyUsage = keyEncipherment, dataEncipherment
+                extendedKeyUsage = serverAuth
+                subjectAltName = @alt_names
+                
+                [alt_names]
+                DNS.1 = localhost
+                EOF
+                
+                # 生成私钥和证书365天有效期
+                openssl req -x509 -newkey rsa:4096 -keyout rustdesk.key -out rustdesk.crt -days 365 -nodes -config cert.conf
+                
+                # 转换为p12格式
+                openssl pkcs12 -export -out rustdesk.p12 -inkey rustdesk.key -in rustdesk.crt -password pass:rustdesk
+                
+                # 解锁钥匙串GitHub Actions环境
+                security unlock-keychain -p "" ~/Library/Keychains/login.keychain
+                
+                # 安装证书到钥匙串
+                security import rustdesk.p12 -k ~/Library/Keychains/login.keychain -P rustdesk -T /usr/bin/codesign
+                
+                # 设置证书为可信任使用空密码适用于GitHub Actions
+                security set-key-partition-list -S apple-tool:,apple: -s -k "" ~/Library/Keychains/login.keychain
+                
+                echo "Self-signed certificate created and installed"
       
       - name: Sign app with self-signed certificate
         if: env.UPLOAD_ARTIFACT == 'true'
