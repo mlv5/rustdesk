@@ -11,7 +11,7 @@ on:
 
 jobs:
   run-flutter-tag-build:
-    uses: ./.github/workflows/flutter-build-simple.yml
+    uses: ./.github/workflows/flutter-build-minimal.yml
     secrets: inherit
     with:
       upload-artifact: true

@@ -202,6 +202,31 @@ jobs:
               Write-Host "Ingore the printer driver error."
           }
 
+      - name: Fix Flutter framework embedding
+        if: inputs.upload-artifact == true
+        run: |
+            if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
+                if [ ! -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
+                    echo "FlutterMacOS.framework not found, copying from Flutter installation"
+                    FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))
+                    FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-arm64/FlutterMacOS.framework"
+                    
+                    if [ ! -d "$FRAMEWORK_PATH" ]; then
+                        echo "❌ Source FlutterMacOS.framework not found at: $FRAMEWORK_PATH"
+                        exit 1
+                    fi
+                    
+                    mkdir -p "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks"
+                    cp -R "$FRAMEWORK_PATH" "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/"
+                    echo "✅ FlutterMacOS.framework copied successfully"
+                else
+                    echo "✅ FlutterMacOS.framework already exists"
+                fi
+            else
+                echo "❌ RustDesk.app not found"
+                exit 1
+            fi
+
       - name: find Runner.res
         # Windows: find Runner.res (compiled from ./flutter/windows/runner/Runner.rc), copy to ./Runner.res
         # Runner.rc does not contain actual version, but Runner.res does
@@ -1425,6 +1450,30 @@ jobs:
                   
                   echo "Build artifacts cleaned"
 
+      - name: Verify build environment before build
+        if: env.UPLOAD_ARTIFACT == 'true'
+        run: |
+                      echo "=== Pre-Build Environment Verification ==="
+                      echo "Current working directory: $(pwd)"
+                      echo "Flutter version:"
+                      flutter --version
+                      echo "Rust version:"
+                      rustc --version
+                      echo "Cargo version:"
+                      cargo --version
+                      echo "CMake version:"
+                      cmake --version
+                      echo "LLVM version:"
+                      clang --version
+                      echo "Environment variables:"
+                      echo "CFLAGS: $CFLAGS"
+                      echo "CXXFLAGS: $CXXFLAGS"
+                      echo "LDFLAGS: $LDFLAGS"
+                      echo "RUSTFLAGS: $RUSTFLAGS"
+                      echo "FLUTTER_BUILD_MODE: $FLUTTER_BUILD_MODE"
+                      echo "FLUTTER_BUILD_NUMBER: $FLUTTER_BUILD_NUMBER"
+                      echo "=========================================="
+
       - name: Build rustdesk
         run: |
                       # 设置环境变量来忽略警告
@@ -1435,6 +1484,19 @@ jobs:
                       # 设置Flutter构建参数
                       export FLUTTER_BUILD_MODE=release
                       export FLUTTER_BUILD_NUMBER=1
+                      
+                      # 设置Rust环境
+                      export RUSTFLAGS="-W unused-imports -W unused-variables"
+                      
+                      # 验证环境变量
+                      echo "=== Build Environment ==="
+                      echo "CFLAGS: $CFLAGS"
+                      echo "CXXFLAGS: $CXXFLAGS"
+                      echo "LDFLAGS: $LDFLAGS"
+                      echo "RUSTFLAGS: $RUSTFLAGS"
+                      echo "FLUTTER_BUILD_MODE: $FLUTTER_BUILD_MODE"
+                      echo "FLUTTER_BUILD_NUMBER: $FLUTTER_BUILD_NUMBER"
+                      echo "========================="
                       
                       MIN_MACOS_VERSION="12.3"
                       sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
@@ -1450,12 +1512,23 @@ jobs:
                       
                       # 检查构建是否成功（即使有警告）
                       if [ $BUILD_EXIT_CODE -eq 0 ] || [ $BUILD_EXIT_CODE -eq 1 ]; then
-                        echo "Build completed successfully (with warnings)"
+                      echo "Build completed successfully (with warnings)"
                       else
-                        echo "Build failed with exit code: $BUILD_EXIT_CODE"
-                        exit $BUILD_EXIT_CODE
+                      echo "Build failed with exit code: $BUILD_EXIT_CODE"
+                      # 显示构建日志以便调试
+                      echo "=== Build Logs ==="
+                      find . -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
+                      echo "=================="
+              
+                      # 显示最近的构建输出
+                      echo "=== Recent Build Output ==="
+                      tail -n 100 /tmp/build.log 2>/dev/null || echo "No build log found"
+                      echo "==========================="
+                      
+                      exit $BUILD_EXIT_CODE
                       fi
 
+              
       # https://github.com/r0adkll/sign-android-release/issues/84#issuecomment-1889636075
       - name: Setup sign tool version variable
         shell: bash

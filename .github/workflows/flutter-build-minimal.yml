@@ -1,0 +1,225 @@
+name: Flutter Build Minimal
+
+on:
+  workflow_call:
+    inputs:
+      upload-artifact:
+        description: 'Upload artifacts'
+        required: false
+        type: boolean
+        default: false
+      upload-tag:
+        description: 'Tag to upload'
+        required: false
+        type: string
+        default: ''
+
+env:
+  FLUTTER_VERSION: "3.24.5"
+  MAC_RUST_VERSION: "1.81"
+  VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836"
+  VERSION: ${{ github.ref_name }}
+
+jobs:
+  # Windows x86_64
+  build-for-windows:
+    name: Windows x86_64
+    runs-on: windows-2022
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: true
+
+      - name: Install vcpkg dependencies
+        run: |
+          if (!$env:VCPKG_ROOT\vcpkg install --x-install-root="$env:VCPKG_ROOT\installed") {
+            Get-ChildItem -Path "$env:VCPKG_ROOT" -Filter "*.log" -Recurse | ForEach-Object {
+              Write-Host "$($_.FullName):"
+              Write-Host "======"
+              Get-Content $_.FullName
+              Write-Host "======"
+              Write-Host ""
+            }
+            exit 1
+          }
+
+      - name: Generate bridge
+        run: |
+          cd flutter
+          dart run ffigen --config ffigen.yaml
+          cd ..
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.81"
+          targets: x86_64-pc-windows-msvc
+          components: "rustfmt"
+
+      - name: Build rustdesk
+        run: |
+            echo "Starting Windows build..."
+            python build.py --flutter --hwcodec --unix-file-copy-paste
+            if ($LASTEXITCODE -ne 0) {
+              echo "Windows build failed!"
+              echo "=== Build Logs ==="
+              Get-ChildItem -Path . -Filter "*.log" -Recurse | ForEach-Object {
+                echo "=== $($_.FullName) ==="
+                Get-Content $_.FullName
+                echo "=================="
+              }
+              exit 1
+            }
+            echo "Windows build completed successfully"
+
+      - name: Upload Windows app
+        if: inputs.upload-artifact == true
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-windows-x86_64
+          path: flutter/build/windows/x64/runner/Release/rustdesk.exe
+
+  # macOS ARM64 ����
+  build-for-macOS:
+    name: macOS ARM64
+    runs-on: macos-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build runtime
+        run: |
+            brew uninstall cmake --ignore-dependencies || true
+            brew install llvm create-dmg nasm cmake gcc wget ninja pkg-config
+
+      - name: Install flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: "stable"
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ env.MAC_RUST_VERSION }}
+          targets: aarch64-apple-darwin
+          components: "rustfmt"
+
+      - name: Patch flutter
+        run: |
+            cd $(dirname $(dirname $(which flutter)))
+            [[ "3.24.5" == ${{env.FLUTTER_VERSION}} ]] && git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
+  
+      - name: Workaround for flutter issue
+        shell: bash
+        run: |
+            cd "$(dirname "$(which flutter)")"
+            sed -i -e 's/_setFramesEnabledState(false);/\/\/_setFramesEnabledState(false);/g' ../packages/flutter/lib/src/scheduler/binding.dart
+            grep -n '_setFramesEnabledState(false);' ../packages/flutter/lib/src/scheduler/binding.dart
+
+      - name: Setup Flutter dependencies
+        run: |
+            cd flutter
+            flutter pub get
+            cd ..
+
+      - name: Generate bridge
+        run: |
+            cd flutter
+            dart run ffigen --config ffigen.yaml
+            cd ..
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: true
+
+      - name: Install vcpkg dependencies
+        run: |
+          if ! $VCPKG_ROOT/vcpkg install --x-install-root="$VCPKG_ROOT/installed"; then
+            find "${VCPKG_ROOT}/" -name "*.log" | while read -r _1; do
+              echo "$_1:"
+              echo "======"
+              cat "$_1"
+              echo "======"
+              echo ""
+            done
+            exit 1
+          fi
+
+      - name: Build rustdesk
+        run: |
+            export CFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
+            export CXXFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
+            export LDFLAGS="-Wl,-ld_classic"
+            export RUSTFLAGS="-W unused-imports -W unused-variables"
+            
+            echo "Starting macOS build..."
+            MIN_MACOS_VERSION="12.3"
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+            sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+            sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+            
+            set +e
+            ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit
+            BUILD_EXIT_CODE=$?
+            set -e
+            
+            if [ $BUILD_EXIT_CODE -eq 0 ] || [ $BUILD_EXIT_CODE -eq 1 ]; then
+              echo "macOS build completed successfully (with warnings)"
+            else
+              echo "macOS build failed with exit code: $BUILD_EXIT_CODE"
+              echo "=== Build Logs ==="
+              find . -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
+              echo "=================="
+              exit $BUILD_EXIT_CODE
+            fi
+
+      - name: Fix Flutter framework embedding
+        if: inputs.upload-artifact == true
+        run: |
+            if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
+                if [ ! -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
+                    echo "FlutterMacOS.framework not found, copying from Flutter installation"
+                    FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))
+                    FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-arm64/FlutterMacOS.framework"
+                    
+                    if [ ! -d "$FRAMEWORK_PATH" ]; then
+                        echo "❌ Source FlutterMacOS.framework not found at: $FRAMEWORK_PATH"
+                        exit 1
+                    fi
+                    
+                    mkdir -p "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks"
+                    cp -R "$FRAMEWORK_PATH" "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/"
+                    echo "✅ FlutterMacOS.framework copied successfully"
+                else
+                    echo "✅ FlutterMacOS.framework already exists"
+                fi
+            else
+                echo "❌ RustDesk.app not found"
+                exit 1
+            fi
+
+      - name: Upload macOS app
+        if: inputs.upload-artifact == true
+        uses: actions/upload-artifact@master
+        with:
+          name: rustdesk-macos-aarch64
+          path: flutter/build/macos/Build/Products/Release/RustDesk.app
