@@ -62,22 +62,11 @@ jobs:
       fail-fast: false
 
   build-for-windows-flutter:
-    name: ${{ matrix.job.target }}
+    if: false  # 添加这一行来完全禁用Windows构建
+    name: windows-flutter-disabled
     needs: [build-RustDeskTempTopMostWindow, generate-bridge]
-    runs-on: ${{ matrix.job.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        job:
-          # - { target: i686-pc-windows-msvc        , os: windows-2022                  }
-          # - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
-          # - {
-          #   target: x86_64-pc-windows-msvc,
-          #  os: windows-2022,
-          #   arch: x86_64,
-          #   vcpkg-triplet: x64-windows-static,
-          # }
-          # - { target: aarch64-pc-windows-msvc, os: windows-2022, arch: aarch64 }
+    runs-on: windows-2022
+    # Windows build disabled - matrix configuration removed
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v6
@@ -979,7 +968,7 @@ jobs:
                   # 安装证书到钥匙串
                   security import rustdesk.p12 -k ~/Library/Keychains/login.keychain -P rustdesk -T /usr/bin/codesign
                   
-                  # 设置证书为可信任GitHub Actions兼容版本
+                  # 设置证书为可信任GitHub Actions兼容版本）
                   security set-key-partition-list -S apple-tool:,apple: -s -k rustdesk ~/Library/Keychains/login.keychain
                   
                   echo "Self-signed certificate created and installed"
