@@ -736,13 +736,13 @@ jobs:
       fail-fast: false
       matrix:
         job:
-          - {
-              target: x86_64-apple-darwin,
-              os: macos-13, #macos-latest or macos-14 use M1 now, https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners#:~:text=14%20GB-,macos%2Dlatest%20or%20macos%2D14,-The%20macos%2Dlatestlabel
-              extra-build-args: "",
-              arch: x86_64,
-              vcpkg-triplet: x64-osx,
-            }
+          #- {
+          #    target: x86_64-apple-darwin,
+          #    os: macos-13, #macos-latest or macos-14 use M1 now, #https://docs.github.com/en/actions/#using-github-hosted-runners/about-github-hosted-runners/#about-github-hosted-runners#:~:text=14%20GB-,#macos%2Dlatest%20or%20macos%2D14,#-The%20macos%2Dlatestlabel
+          #    extra-build-args: "",
+          #    arch: x86_64,
+          #    vcpkg-triplet: x64-osx,
+          #  }
           - {
               target: aarch64-apple-darwin,
               os: macos-latest,
@@ -795,67 +795,17 @@ jobs:
           wget https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.22.0/apple-codesign-0.22.0-macos-universal.tar.gz
           tar -zxvf apple-codesign-0.22.0-macos-universal.tar.gz
           mv apple-codesign-0.22.0-macos-universal/rcodesign /usr/local/bin
-          popd
-
-      - name: Clear problematic caches
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-              # 清理有问题的缓存
-              echo "Clearing problematic caches..."
-              
-              # 清理brew缓存
-              brew cleanup || true
-              rm -rf /usr/local/var/homebrew/locks || true
-              
-              # 清理Flutter缓存
-              flutter clean || true
-              rm -rf ~/.pub-cache || true
-              
-              # 清理Rust缓存
-              cargo clean || true
-              
-              echo "Caches cleared successfully"          
+          popd         
 
       - name: Install build runtime
         run: |
-                  # 先卸载可能存在的cmake
-                  brew uninstall cmake --ignore-dependencies || true
-                  
-                  # 强制重新安装构建工具
-                  brew reinstall llvm create-dmg nasm cmake gcc wget ninja || brew install llvm create-dmg nasm cmake gcc wget ninja
-                  
-                  # pkg-config is handled in a separate step, because it may be already installed by `macos-latest`(14.7.1) runner
-                  if command -v pkg-config &>/dev/null; then
-                      echo "pkg-config is already installed"
-                  else
-                      brew install pkg-config
-                  fi
-
-      - name: Fix Swift compilation issues
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-                      # 修复Swift编译问题
-                      echo "Fixing Swift compilation issues..."
-                      
-                      # 设置环境变量来忽略警告
-                      export CFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-                      export CXXFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-                      export LDFLAGS="-Wl,-ld_classic"
-                      
-                      # 清理可能存在的构建缓存
-                      flutter clean || true
-                      
-                      # 设置Flutter构建参数
-                      export FLUTTER_BUILD_MODE=release
-                      export FLUTTER_BUILD_NUMBER=1
-                      
-                      # 验证环境变量设置
-                      echo "Environment variables:"
-                      echo "CFLAGS: $CFLAGS"
-                      echo "CXXFLAGS: $CXXFLAGS"
-                      echo "LDFLAGS: $LDFLAGS"
-                      
-                      echo "Swift compilation issues fixed"
+                brew install llvm create-dmg nasm cmake gcc wget ninja
+                # pkg-config is handled in a separate step, because it may be already installed by `macos-latest`(14.7.1) runner
+                if command -v pkg-config &>/dev/null; then
+                    echo "pkg-config is already installed"
+                else
+                    brew install pkg-config
+                fi
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -887,19 +837,6 @@ jobs:
         with:
           prefix-key: ${{ matrix.job.os }}
 
-      - name: Setup Flutter dependencies
-        run: |
-              cd flutter
-              flutter pub get
-              flutter pub upgrade
-              cd ..
-  
-      - name: Generate bridge
-        run: |
-              cd flutter
-              dart run ffigen --config ffigen.yaml
-              cd ..
-
       - name: Restore bridge files
         uses: actions/download-artifact@master
         with:
@@ -911,27 +848,6 @@ jobs:
         with:
           vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
           doNotCache: false
-
-      - name: Verify build environment
-        run: |
-              echo "=== Build Environment Verification ==="
-              echo "Flutter version:"
-              flutter --version
-              echo "Rust version:"
-              rustc --version
-              echo "Cargo version:"
-              cargo --version
-              echo "CMake version:"
-              cmake --version
-              echo "LLVM version:"
-              clang --version
-              echo "Environment variables:"
-              echo "CFLAGS: $CFLAGS"
-              echo "CXXFLAGS: $CXXFLAGS"
-              echo "LDFLAGS: $LDFLAGS"
-              echo "FLUTTER_BUILD_MODE: $FLUTTER_BUILD_MODE"
-              echo "FLUTTER_BUILD_NUMBER: $FLUTTER_BUILD_NUMBER"
-              echo "======================================"
 
       - name: Install vcpkg dependencies
         run: |
@@ -948,33 +864,6 @@ jobs:
             exit 1
           fi
           head -n 100 "${VCPKG_ROOT}/buildtrees/ffmpeg/build-${{ matrix.job.vcpkg-triplet }}-rel-out.log" || true
-
-      - name: Verify build output
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-              echo "=== Build Output Verification ==="
-              if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
-                  echo "✅ RustDesk.app found"
-                  ls -la "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/"
-                  
-                  # 检查FlutterMacOS.framework
-                  if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
-                      echo "✅ FlutterMacOS.framework found"
-                  else
-                      echo "❌ FlutterMacOS.framework missing"
-                  fi
-                  
-                  # 检查可执行文件
-                  if [ -f "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/RustDesk" ]; then
-                      echo "✅ RustDesk executable found"
-                  else
-                      echo "❌ RustDesk executable missing"
-                  fi
-              else
-                  echo "❌ RustDesk.app not found"
-                  exit 1
-              fi
-              echo "=================================="
 
       - name: Show version information (Rust, cargo, Clang)
         shell: bash
