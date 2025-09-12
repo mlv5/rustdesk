@@ -928,110 +928,23 @@ jobs:
                 echo "Error: RustDesk.app not found"
                 exit 1
               fi
-  
-      - name: Create and install self-signed certificate
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-                echo "Creating self-signed certificate..."
-                
-                # 创建证书配置文件
-                cat > cert.conf << EOF
-                [req]
-                distinguished_name = req_distinguished_name
-                req_extensions = v3_req
-                prompt = no
-                
-                [req_distinguished_name]
-                C = US
-                ST = CA
-                L = San Francisco
-                O = RustDesk
-                OU = Development
-                CN = RustDesk Developer
-                
-                [v3_req]
-                keyUsage = keyEncipherment, dataEncipherment
-                extendedKeyUsage = serverAuth
-                subjectAltName = @alt_names
-                
-                [alt_names]
-                DNS.1 = localhost
-                EOF
-                
-                # 生成私钥和证书365天有效期
-                openssl req -x509 -newkey rsa:4096 -keyout rustdesk.key -out rustdesk.crt -days 365 -nodes -config cert.conf
-                
-                # 转换为p12格式
-                openssl pkcs12 -export -out rustdesk.p12 -inkey rustdesk.key -in rustdesk.crt -password pass:rustdesk
-                
-                # 解锁钥匙串GitHub Actions环境
-                security unlock-keychain -p "" ~/Library/Keychains/login.keychain
-                
-                # 安装证书到钥匙串
-                security import rustdesk.p12 -k ~/Library/Keychains/login.keychain -P rustdesk -T /usr/bin/codesign
-                
-                # 设置证书为可信任使用空密码适用于GitHub Actions
-                security set-key-partition-list -S apple-tool:,apple: -s -k "" ~/Library/Keychains/login.keychain
-                
-                echo "Self-signed certificate created and installed"
-      
-      - name: Sign app with self-signed certificate
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-                  # 使用自签名证书签名应用
-                  if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
-                    echo "Signing app with self-signed certificate..."
-                    
-                    # 查找证书
-                    CERT_ID=$(security find-identity -v -p codesigning | grep "RustDesk Developer" | awk '{print $2}')
-                    
-                    if [ -z "$CERT_ID" ]; then
-                      echo "Error: Self-signed certificate not found"
-                      exit 1
-                    fi
-                    
-                    echo "Found certificate: $CERT_ID"
-                    
-                    # 签名主应用
-                    codesign --force --sign "$CERT_ID" --deep "./flutter/build/macos/Build/Products/Release/RustDesk.app"
-                    
-                    # 验证签名
-                    codesign --verify --deep --strict "./flutter/build/macos/Build/Products/Release/RustDesk.app"
-                    
-                    # 显示签名信息
-                    codesign -dv "./flutter/build/macos/Build/Products/Release/RustDesk.app"
-                    
-                    echo "App signed successfully with self-signed certificate"
-                  else
-                    echo "Error: RustDesk.app not found"
-                    exit 1
-                  fi
       
       - name: Remove quarantine attributes
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-                  # 移除应用的隔离属性，避免macOS阻止运行
-                  if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
-                    echo "Removing quarantine attributes from RustDesk.app"
-                    
-                    # 移除所有可能的隔离属性
-                    xattr -r -d com.apple.quarantine "./flutter/build/macos/Build/Products/Release/RustDesk.app" || true
-                    xattr -r -d com.apple.provenance "./flutter/build/macos/Build/Products/Release/RustDesk.app" || true
-                    xattr -r -d com.apple.metadata:kMDItemWhereFroms "./flutter/build/macos/Build/Products/Release/RustDesk.app" || true
-                    
-                    # 验证隔离属性是否已移除
-                    echo "Verifying quarantine attributes removal:"
-                    xattr -l "./flutter/build/macos/Build/Products/Release/RustDesk.app" || echo "No quarantine attributes found"
-                    
-                    # 设置正确的权限
-                    chmod -R 755 "./flutter/build/macos/Build/Products/Release/RustDesk.app"
-                    chmod +x "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/RustDesk"
-                    
-                    echo "Quarantine attributes removed successfully"
-                  else
-                    echo "Error: RustDesk.app not found"
-                    exit 1
-                  fi
+                echo "Removing quarantine attributes..."
+                if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
+                  # 移除隔离属性
+                  xattr -d com.apple.quarantine "./flutter/build/macos/Build/Products/Release/RustDesk.app" 2>/dev/null || true
+                  
+                  # 移除所有扩展属性
+                  xattr -cr "./flutter/build/macos/Build/Products/Release/RustDesk.app" 2>/dev/null || true
+                  
+                  echo "Quarantine attributes removed"
+                else
+                  echo "Error: RustDesk.app not found"
+                  exit 1
+                fi
   
       - name: create signed dmg
         if: env.UPLOAD_ARTIFACT == 'true'
