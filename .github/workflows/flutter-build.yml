@@ -62,11 +62,22 @@ jobs:
       fail-fast: false
 
   build-for-windows-flutter:
-    if: false  # 添加这一行来完全禁用Windows构建
-    name: windows-flutter-disabled
+    name: ${{ matrix.job.target }}
     needs: [build-RustDeskTempTopMostWindow, generate-bridge]
-    runs-on: windows-2022
-    # Windows build disabled - matrix configuration removed
+    runs-on: ${{ matrix.job.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          # - { target: i686-pc-windows-msvc        , os: windows-2022                  }
+          # - { target: x86_64-pc-windows-gnu       , os: windows-2022                  }
+          - {
+              target: x86_64-pc-windows-msvc,
+              os: windows-2022,
+              arch: x86_64,
+              vcpkg-triplet: x64-windows-static,
+            }
+          # - { target: aarch64-pc-windows-msvc, os: windows-2022, arch: aarch64 }
     steps:
       - name: Export GitHub Actions cache environment variables
         uses: actions/github-script@v6
@@ -191,31 +202,6 @@ jobs:
               Write-Host "Ingore the printer driver error."
           }
 
-      - name: Fix Flutter framework embedding
-        if: inputs.upload-artifact == true
-        run: |
-            if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
-                if [ ! -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
-                    echo "FlutterMacOS.framework not found, copying from Flutter installation"
-                    FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))
-                    FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-arm64/FlutterMacOS.framework"
-                    
-                    if [ ! -d "$FRAMEWORK_PATH" ]; then
-                        echo "❌ Source FlutterMacOS.framework not found at: $FRAMEWORK_PATH"
-                        exit 1
-                    fi
-                    
-                    mkdir -p "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks"
-                    cp -R "$FRAMEWORK_PATH" "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/"
-                    echo "✅ FlutterMacOS.framework copied successfully"
-                else
-                    echo "✅ FlutterMacOS.framework already exists"
-                fi
-            else
-                echo "❌ RustDesk.app not found"
-                exit 1
-            fi
-
       - name: find Runner.res
         # Windows: find Runner.res (compiled from ./flutter/windows/runner/Runner.rc), copy to ./Runner.res
         # Runner.rc does not contain actual version, but Runner.res does
@@ -296,11 +282,8 @@ jobs:
 
   # The fallback for the flutter version, we use Sciter for 32bit Windows.
   build-for-windows-sciter:
-    if: false
     name: ${{ matrix.job.target }} (${{ matrix.job.os }})
     runs-on: ${{ matrix.job.os }}
-    # Temporarily disable this action due to additional test is needed.
-    # if: false
     strategy:
       fail-fast: false
       matrix:
@@ -480,6 +463,22 @@ jobs:
         uses: actions/upload-artifact@master
         with:
           name: rustdesk-unsigned-macos-arm64
+          path: rustdesk-${{ env.VERSION }}-arm64.dmg # can not upload the directory directly or tar.gz file, which destroy the link structure, causing the codesign failed
+
+      - name: Codesign app and create signed dmg
+        if: env.MACOS_P12_BASE64 != null && env.UPLOAD_ARTIFACT == 'true'
+        run: |
+          # Patch create-dmg to give more attempts to unmount image
+          CREATE_DMG="$(command -v create-dmg)"
+          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          # start sign the rustdesk.app and dmg
+          rm -rf *.dmg || true
+          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict ./flutter/build/macos/Build/Products/Release/RustDesk.app -vvv
+          create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
+          # notarize the rustdesk-${{ env.VERSION }}.dmg
+          rcodesign notary-submit --api-key-path ~/.p12/api-key.json  --staple rustdesk-${{ env.VERSION }}.dmg
 
       - name: Rename rustdesk
         if: env.UPLOAD_ARTIFACT == 'true'
@@ -498,8 +497,7 @@ jobs:
             rustdesk*-aarch64.dmg
 
   build-rustdesk-ios:
-    if: false  # 添加这一行
-    #if: ${{ inputs.upload-artifact }}
+    if: ${{ inputs.upload-artifact }}
     name: build rustdesk ios ipa
     runs-on: ${{ matrix.job.os }}
     needs: [generate-bridge]
@@ -593,55 +591,13 @@ jobs:
           name: liblibrustdesk.a
           path: target/aarch64-apple-ios/release/liblibrustdesk.a
 
-      - name: Clean build artifacts
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-                  # 清理构建产物
-                  echo "Cleaning build artifacts..."
-                  
-                  # 清理Flutter构建缓存
-                  flutter clean || true
-                  rm -rf flutter/build || true
-                  
-                  # 清理Rust构建缓存
-                  cargo clean || true
-                  
-                  # 清理可能的临时文件
-                  find . -name "*.o" -delete || true
-                  find . -name "*.a" -delete || true
-                  
-                  echo "Build artifacts cleaned"
-
       - name: Build rustdesk
+        shell: bash
         run: |
-                      # 设置环境变量来忽略警告
-                      export CFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-                      export CXXFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-                      export LDFLAGS="-Wl,-ld_classic"
-                      
-                      # 设置Flutter构建参数
-                      export FLUTTER_BUILD_MODE=release
-                      export FLUTTER_BUILD_NUMBER=1
-                      
-                      MIN_MACOS_VERSION="12.3"
-                      sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
-                      sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
-                      sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
-                      sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
-                      
-                      # 构建应用，允许警告但继续构建
-                      set +e  # 允许命令失败但不退出
-                      ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit
-                      BUILD_EXIT_CODE=$?
-                      set -e  # 重新启用错误退出
-                      
-                      # 检查构建是否成功（即使有警告）
-                      if [ $BUILD_EXIT_CODE -eq 0 ] || [ $BUILD_EXIT_CODE -eq 1 ]; then
-                        echo "Build completed successfully (with warnings)"
-                      else
-                        echo "Build failed with exit code: $BUILD_EXIT_CODE"
-                        exit $BUILD_EXIT_CODE
-                      fi
+          pushd flutter
+          # flutter build ipa --release --obfuscate --split-debug-info=./split-debug-info --no-codesign
+          # for easy debugging
+          flutter build ipa --release --no-codesign
 
       # - name: Upload Artifacts
       #   # if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
@@ -718,6 +674,8 @@ jobs:
       #       flutter/build/ios/ipa/*.ipa
 
   build-for-macOS:
+    # Temporarily disable this action due to additional test is needed.
+    if: false 
     name: ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
     needs: [generate-bridge]
@@ -725,13 +683,13 @@ jobs:
       fail-fast: false
       matrix:
         job:
-          #- {
-          #    target: x86_64-apple-darwin,
-          #    os: macos-13, #macos-latest or macos-14 use M1 now, #https://docs.github.com/en/actions/#using-github-hosted-runners/about-github-hosted-runners/#about-github-hosted-runners#:~:text=14%20GB-,#macos%2Dlatest%20or%20macos%2D14,#-The%20macos%2Dlatestlabel
-          #    extra-build-args: "",
-          #    arch: x86_64,
-          #    vcpkg-triplet: x64-osx,
-          #  }
+          - {
+              target: x86_64-apple-darwin,
+              os: macos-13, #macos-latest or macos-14 use M1 now, https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners#:~:text=14%20GB-,macos%2Dlatest%20or%20macos%2D14,-The%20macos%2Dlatestlabel
+              extra-build-args: "",
+              arch: x86_64,
+              vcpkg-triplet: x64-osx,
+            }
           - {
               target: aarch64-apple-darwin,
               os: macos-latest,
@@ -784,17 +742,17 @@ jobs:
           wget https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F0.22.0/apple-codesign-0.22.0-macos-universal.tar.gz
           tar -zxvf apple-codesign-0.22.0-macos-universal.tar.gz
           mv apple-codesign-0.22.0-macos-universal/rcodesign /usr/local/bin
-          popd         
+          popd
 
       - name: Install build runtime
         run: |
-                brew install llvm create-dmg nasm cmake gcc wget ninja
-                # pkg-config is handled in a separate step, because it may be already installed by `macos-latest`(14.7.1) runner
-                if command -v pkg-config &>/dev/null; then
-                    echo "pkg-config is already installed"
-                else
-                    brew install pkg-config
-                fi
+          brew install llvm create-dmg nasm cmake gcc wget ninja
+          # pkg-config is handled in a separate step, because it may be already installed by `macos-latest`(14.7.1) runner
+          if command -v pkg-config &>/dev/null; then
+              echo "pkg-config is already installed"
+          else
+              brew install pkg-config
+          fi
 
       - name: Install flutter
         uses: subosito/flutter-action@v2
@@ -866,124 +824,70 @@ jobs:
 
       - name: Build rustdesk
         run: |
-              MIN_MACOS_VERSION="12.3"
-              sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
-              sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
-              sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
-              sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
-              
-              # 设置环境变量来忽略警告
-              export CFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new"
-              export CXXFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new"
-              export LDFLAGS="-Wl,-ld_classic"
-              
-              # 设置Flutter构建参数
-              export FLUTTER_BUILD_MODE=release
-              export FLUTTER_BUILD_NUMBER=1
-              
-              # 构建应用，忽略警告
-              ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit || echo "Build completed with warnings"
-  
-      - name: Fix Flutter framework embedding
+          if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
+            MIN_MACOS_VERSION="12.3"
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
+            sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
+            sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
+            sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
+          fi
+          ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
+
+      - name: create unsigned dmg
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-              # 确保Flutter框架被正确嵌入
-              if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
-                # 检查Flutter框架是否存在
-                if [ ! -d "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/FlutterMacOS.framework" ]; then
-                  echo "FlutterMacOS.framework not found, copying from Flutter installation"
-                  # 从Flutter安装目录复制框架
-                  FLUTTER_ROOT=$(dirname $(dirname $(which flutter)))
-                  
-                  # 根据架构选择正确的框架路径
-                  if [ "${{ matrix.job.target }}" = "aarch64-apple-darwin" ]; then
-                    FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-arm64/FlutterMacOS.framework"
-                  else
-                    FRAMEWORK_PATH="$FLUTTER_ROOT/bin/cache/artifacts/engine/darwin-x64/FlutterMacOS.framework"
-                  fi
-                  
-                  # 检查源框架是否存在
-                  if [ ! -d "$FRAMEWORK_PATH" ]; then
-                    echo "Error: Flutter framework not found at $FRAMEWORK_PATH"
-                    echo "Available frameworks:"
-                    ls -la "$FLUTTER_ROOT/bin/cache/artifacts/engine/" || true
-                    exit 1
-                  fi
-                  
-                  # 确保目标目录存在
-                  mkdir -p "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/"
-                  
-                  # 复制框架
-                  cp -R "$FRAMEWORK_PATH" \
-                    "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/"
-                  
-                  echo "FlutterMacOS.framework copied successfully"
-                else
-                  echo "FlutterMacOS.framework already exists"
-                fi
-                
-                # 验证框架是否正确嵌入
-                ls -la "./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/Frameworks/"
-              else
-                echo "Error: RustDesk.app not found"
-                exit 1
-              fi
-      
-      - name: Remove quarantine attributes
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-                echo "Removing quarantine attributes..."
-                if [ -d "./flutter/build/macos/Build/Products/Release/RustDesk.app" ]; then
-                  # 移除隔离属性
-                  xattr -d com.apple.quarantine "./flutter/build/macos/Build/Products/Release/RustDesk.app" 2>/dev/null || true
-                  
-                  # 移除所有扩展属性
-                  xattr -cr "./flutter/build/macos/Build/Products/Release/RustDesk.app" 2>/dev/null || true
-                  
-                  echo "Quarantine attributes removed"
-                else
-                  echo "Error: RustDesk.app not found"
-                  exit 1
-                fi
-  
-      - name: create signed dmg
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-            CREATE_DMG="$(command -v create-dmg)"
-            CREATE_DMG="$(readlink -f "$CREATE_DMG")"
-            sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
-            create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
-  
-      - name: Upload signed macOS app
+          CREATE_DMG="$(command -v create-dmg)"
+          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+
+      - name: Upload unsigned macOS app
         if: env.UPLOAD_ARTIFACT == 'true'
         uses: actions/upload-artifact@master
         with:
-            name: rustdesk-signed-macos-${{ matrix.job.arch }}
-            path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg
-  
+          name: rustdesk-unsigned-macos-${{ matrix.job.arch }}
+          path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.dmg # can not upload the directory directly or tar.gz, which destroy the link structure, causing the codesign failed
+
+      - name: Codesign app and create signed dmg
+        if: env.MACOS_P12_BASE64 != null && env.UPLOAD_ARTIFACT == 'true'
+        run: |
+          # Patch create-dmg to give more attempts to unmount image
+          CREATE_DMG="$(command -v create-dmg)"
+          CREATE_DMG="$(readlink -f "$CREATE_DMG")"
+          sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
+          # Unlock keychain
+          security default-keychain -s rustdesk.keychain
+          security unlock-keychain -p ${{ secrets.MACOS_P12_PASSWORD }} rustdesk.keychain
+          # start sign the rustdesk.app and dmg
+          rm -rf *.dmg || true
+          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict ./flutter/build/macos/Build/Products/Release/RustDesk.app -vvv
+          create-dmg --icon "RustDesk.app" 200 190 --hide-extension "RustDesk.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}.dmg ./flutter/build/macos/Build/Products/Release/RustDesk.app
+          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}.dmg -vvv
+          # notarize the rustdesk-${{ env.VERSION }}.dmg
+          rcodesign notary-submit --api-key-path ${{ github.workspace }}/rustdesk.json  --staple rustdesk-${{ env.VERSION }}.dmg
+
       - name: Rename rustdesk
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-            for name in rustdesk*??.dmg; do
-                mv "$name" "${name%%.dmg}-${{ matrix.job.arch }}.dmg"
-            done
-  
+          for name in rustdesk*??.dmg; do
+              mv "$name" "${name%%.dmg}-${{ matrix.job.arch }}.dmg"
+          done
+
       - name: Publish DMG package
         if: env.UPLOAD_ARTIFACT == 'true'
         uses: softprops/action-gh-release@v1
         with:
-            prerelease: true
-            tag_name: ${{ env.TAG_NAME }}
-            files: |
-              rustdesk*-${{ matrix.job.arch }}.dmg
+          prerelease: true
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            rustdesk*-${{ matrix.job.arch }}.dmg
 
   publish_unsigned:
-    if: false
     needs:
       - build-for-macOS
       - build-for-windows-flutter
     runs-on: ubuntu-latest
-    #if: ${{ inputs.upload-artifact }}
+    if: ${{ inputs.upload-artifact }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@master
@@ -1015,7 +919,6 @@ jobs:
           files: rustdesk-${{ env.VERSION }}-unsigned.tar.gz
 
   build-rustdesk-android:
-    if: false  # 添加这一行
     needs: [generate-bridge]
     name: build rustdesk android apk ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
@@ -1208,124 +1111,56 @@ jobs:
           name: librustdesk.so.${{ matrix.job.target }}
           path: ./target/${{ matrix.job.target }}/release/liblibrustdesk.so
 
-      - name: Set build environment
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-              # 设置构建环境变量
-              echo "Setting build environment..."
-              
-              # 设置编译器标志，忽略所有警告
-              export CFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-              export CXXFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-              export LDFLAGS="-Wl,-ld_classic"
-              
-              # 设置Flutter环境
-              export FLUTTER_BUILD_MODE=release
-              export FLUTTER_BUILD_NUMBER=1
-              
-              # 设置Rust环境
-              export RUSTFLAGS="-W unused-imports -W unused-variables"
-              
-              echo "Build environment set successfully"
-
-      - name: Clean build artifacts
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-                  # 清理构建产物
-                  echo "Cleaning build artifacts..."
-                  
-                  # 清理Flutter构建缓存
-                  flutter clean || true
-                  rm -rf flutter/build || true
-                  
-                  # 清理Rust构建缓存
-                  cargo clean || true
-                  
-                  # 清理可能的临时文件
-                  find . -name "*.o" -delete || true
-                  find . -name "*.a" -delete || true
-                  
-                  echo "Build artifacts cleaned"
-
-      - name: Verify build environment before build
-        if: env.UPLOAD_ARTIFACT == 'true'
-        run: |
-                      echo "=== Pre-Build Environment Verification ==="
-                      echo "Current working directory: $(pwd)"
-                      echo "Flutter version:"
-                      flutter --version
-                      echo "Rust version:"
-                      rustc --version
-                      echo "Cargo version:"
-                      cargo --version
-                      echo "CMake version:"
-                      cmake --version
-                      echo "LLVM version:"
-                      clang --version
-                      echo "Environment variables:"
-                      echo "CFLAGS: $CFLAGS"
-                      echo "CXXFLAGS: $CXXFLAGS"
-                      echo "LDFLAGS: $LDFLAGS"
-                      echo "RUSTFLAGS: $RUSTFLAGS"
-                      echo "FLUTTER_BUILD_MODE: $FLUTTER_BUILD_MODE"
-                      echo "FLUTTER_BUILD_NUMBER: $FLUTTER_BUILD_NUMBER"
-                      echo "=========================================="
-
       - name: Build rustdesk
+        shell: bash
+        env:
+          JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
         run: |
-                      # 设置环境变量来忽略警告
-                      export CFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-                      export CXXFLAGS="-Wno-ignored-attributes -Wno-deprecated-declarations -Wno-unused-result -Wno-unguarded-availability-new -Wno-error"
-                      export LDFLAGS="-Wl,-ld_classic"
-                      
-                      # 设置Flutter构建参数
-                      export FLUTTER_BUILD_MODE=release
-                      export FLUTTER_BUILD_NUMBER=1
-                      
-                      # 设置Rust环境
-                      export RUSTFLAGS="-W unused-imports -W unused-variables"
-                      
-                      # 验证环境变量
-                      echo "=== Build Environment ==="
-                      echo "CFLAGS: $CFLAGS"
-                      echo "CXXFLAGS: $CXXFLAGS"
-                      echo "LDFLAGS: $LDFLAGS"
-                      echo "RUSTFLAGS: $RUSTFLAGS"
-                      echo "FLUTTER_BUILD_MODE: $FLUTTER_BUILD_MODE"
-                      echo "FLUTTER_BUILD_NUMBER: $FLUTTER_BUILD_NUMBER"
-                      echo "========================="
-                      
-                      MIN_MACOS_VERSION="12.3"
-                      sed -i -e "s/MACOSX_DEPLOYMENT_TARGET\=[0-9]*.[0-9]*/MACOSX_DEPLOYMENT_TARGET=${MIN_MACOS_VERSION}/" build.py
-                      sed -i -e "s/platform :osx, '.*'/platform :osx, '${MIN_MACOS_VERSION}'/" flutter/macos/Podfile
-                      sed -i -e "s/osx_minimum_system_version = \"[0-9]*.[0-9]*\"/osx_minimum_system_version = \"${MIN_MACOS_VERSION}\"/" Cargo.toml
-                      sed -i -e "s/MACOSX_DEPLOYMENT_TARGET = [0-9]*.[0-9]*;/MACOSX_DEPLOYMENT_TARGET = ${MIN_MACOS_VERSION};/" flutter/macos/Runner.xcodeproj/project.pbxproj
-                      
-                      # 构建应用，允许警告但继续构建
-                      set +e  # 允许命令失败但不退出
-                      ./build.py --flutter --hwcodec --unix-file-copy-paste --screencapturekit
-                      BUILD_EXIT_CODE=$?
-                      set -e  # 重新启用错误退出
-                      
-                      # 检查构建是否成功（即使有警告）
-                      if [ $BUILD_EXIT_CODE -eq 0 ] || [ $BUILD_EXIT_CODE -eq 1 ]; then
-                      echo "Build completed successfully (with warnings)"
-                      else
-                      echo "Build failed with exit code: $BUILD_EXIT_CODE"
-                      # 显示构建日志以便调试
-                      echo "=== Build Logs ==="
-                      find . -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
-                      echo "=================="
-              
-                      # 显示最近的构建输出
-                      echo "=== Recent Build Output ==="
-                      tail -n 100 /tmp/build.log 2>/dev/null || echo "No build log found"
-                      echo "==========================="
-                      
-                      exit $BUILD_EXIT_CODE
-                      fi
+          export PATH=/usr/lib/jvm/java-17-openjdk-amd64/bin:$PATH
+          # temporary use debug sign config
+          sed -i "s/signingConfigs.release/signingConfigs.debug/g" ./flutter/android/app/build.gradle
+          case ${{ matrix.job.target }} in
+            aarch64-linux-android)
+              mkdir -p ./flutter/android/app/src/main/jniLibs/arm64-v8a
+              cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/
+              cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
+              # build flutter
+              pushd flutter
+              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-arm64 --split-per-abi
+              mv build/app/outputs/flutter-apk/app-arm64-v8a-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
+            ;;
+            armv7-linux-androideabi)
+              mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
+              cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/arm-linux-androideabi/libc++_shared.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/
+              cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
+              # build flutter
+              pushd flutter
+              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-arm --split-per-abi
+              mv build/app/outputs/flutter-apk/app-armeabi-v7a-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
+            ;;
+            x86_64-linux-android)
+              mkdir -p ./flutter/android/app/src/main/jniLibs/x86_64
+              cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/x86_64-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/x86_64/
+              cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/x86_64/librustdesk.so
+              # build flutter
+              pushd flutter
+              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-x64 --split-per-abi
+              mv build/app/outputs/flutter-apk/app-x86_64-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
+            ;;
+            i686-linux-android)
+              mkdir -p ./flutter/android/app/src/main/jniLibs/x86
+              cp ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/i686-linux-android/libc++_shared.so ./flutter/android/app/src/main/jniLibs/x86/
+              cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/x86/librustdesk.so
+              # build flutter
+              pushd flutter
+              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-x86 --split-per-abi
+              mv build/app/outputs/flutter-apk/app-x86-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
+            ;;
+          esac
+          popd
+          mkdir -p signed-apk; pushd signed-apk
+          mv ../rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk .
 
-              
       # https://github.com/r0adkll/sign-android-release/issues/84#issuecomment-1889636075
       - name: Setup sign tool version variable
         shell: bash
@@ -1374,10 +1209,9 @@ jobs:
             signed-apk/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}.apk
 
   build-rustdesk-android-universal:
-    if: false
     needs: [build-rustdesk-android]
     name: build rustdesk android universal apk
-    #if: ${{ inputs.upload-artifact }}
+    if: ${{ inputs.upload-artifact }}
     runs-on: ubuntu-22.04
     env:
       reltype: release
@@ -1557,7 +1391,6 @@ jobs:
             signed-apk/rustdesk-${{ env.VERSION }}-universal${{ env.suffix }}.apk
 
   build-rustdesk-linux:
-    if: false
     needs: [generate-bridge]
     name: build rustdesk linux ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.on }}
@@ -1894,8 +1727,7 @@ jobs:
             res/rustdesk-${{ env.VERSION }}*.zst
 
   build-rustdesk-linux-sciter:
-    if: false  # 添加这一行
-    #if: ${{ inputs.upload-artifact }}
+    if: ${{ inputs.upload-artifact }}
     runs-on: ${{ matrix.job.on }}
     name: build-rustdesk-linux-sciter ${{ matrix.job.target }}
     strategy:
@@ -2112,11 +1944,10 @@ jobs:
           path: rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}-sciter.deb
 
   build-appimage:
-    if: false
     name: Build appimage ${{ matrix.job.target }}
     needs: [build-rustdesk-linux]
     runs-on: ubuntu-22.04
-    #if: ${{ inputs.upload-artifact }}
+    if: ${{ inputs.upload-artifact }}
     strategy:
       fail-fast: false
       matrix:
@@ -2166,13 +1997,12 @@ jobs:
             ./appimage/rustdesk-${{ env.VERSION }}-*.AppImage
 
   build-flatpak:
-    if: false
     name: Build flatpak ${{ matrix.job.target }}${{ matrix.job.suffix }}
     needs:
       - build-rustdesk-linux
       - build-rustdesk-linux-sciter
     runs-on: ${{ matrix.job.on }}
-    #if: ${{ inputs.upload-artifact }}
+    if: ${{ inputs.upload-artifact }}
     strategy:
       fail-fast: false
       matrix:
@@ -2251,7 +2081,7 @@ jobs:
             flatpak/rustdesk-${{ env.VERSION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.flatpak
 
   build-rustdesk-web:
-    if: false
+    if: False
     name: build-rustdesk-web
     runs-on: ubuntu-22.04
     strategy:
