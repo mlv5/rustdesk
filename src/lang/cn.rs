@@ -388,7 +388,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Show RustDesk", "显示 RustDesk"),
         ("This PC", "此电脑"),
         ("or", "或"),
-        ("Continue with", "企微扫码"),
+        ("Continue with", ""),
         ("Elevate", "提权"),
         ("Zoom cursor", "缩放光标"),
         ("Accept sessions via password", "只允许密码访问"),
